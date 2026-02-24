@@ -12,13 +12,70 @@ import (
 	"strings"
 
 	"image"
-	_ "image/color"
+	"image/color"
 	_ "image/draw"
 	_ "image/png"
 	"math/rand"
 	"slices"
 	pxllist "textmimic/pixellist"
 )
+
+const (
+	mergerxscale = 0.1 //makes the letters more mashed together for more natural letter end connections. a lot easier than the Y merging im doing
+
+	maxendxsearch = 13 //%
+
+	maxendysearch   = 70 //%
+	startendysearch = 85 //%
+	// searches the area of maxendysearch to startendysearch where 0% is the top, sorta like a slice[maxendysearch:startendysearch] would
+)
+
+// checks if a pixel is darker than pure gray (#808080) and is not transparent, 50% for good measure
+func isBlackEnough(c color.Color) bool {
+	r, g, b, a := c.RGBA()
+	return r < 0x8000 && g < 0x8000 && b < 0x8000 && a > 0x8000 // ~50% alpha (32768 out of 65535)
+}
+
+func findRightEnd(img image.Image, wordlen int) (int, int, bool) {
+	b := img.Bounds()
+
+	for x := wordlen - 1; x >= b.Min.X*((maxendxsearch-100)*-1)/100; x-- {
+		for y := ((b.Max.Y - 1) * startendysearch) / 100; y >= ((b.Max.Y-1)*maxendysearch)/100; y-- {
+			if isBlackEnough(img.At(x, y)) {
+				return (wordlen - 1) - x, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func findLeftEnd(img image.Image) (int, int, bool) {
+	b := img.Bounds()
+
+	for x := b.Min.X; x < b.Max.X*maxendxsearch/100; x++ {
+		for y := ((b.Max.Y - 1) * startendysearch) / 100; y >= ((b.Max.Y-1)*maxendysearch)/100; y-- {
+			if isBlackEnough(img.At(x, y)) {
+				return x - b.Min.X, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// Returns the vertical offset needed to align the two letter ends, Positive result means imagebuffer must move DOWN, Negative result means imagebuffer must move UP. Searches in boundaries written in constants, im not writing them here
+func YLevelDifference(wordimg0 image.Image, wordlen int, imagebuffer image.Image) (int, int) {
+	x1, y1, ok1 := findRightEnd(wordimg0, wordlen)
+	if !ok1 {
+		return 0, 0
+	}
+
+	x2, y2, ok2 := findLeftEnd(imagebuffer)
+	if !ok2 {
+		return 0, 0
+	}
+
+	return x1 + x2, y1 - y2
+}
 
 func main() {
 	var userinputraw string
@@ -144,14 +201,32 @@ func main() {
 			}
 			boundaries := imagebuffer.Bounds()
 			if wordlen+boundaries.Dx() <= maxwidth {
-				draw.Draw(
-					wordimg0,
-					image.Rect(wordlen, pxperline-boundaries.Dy(), wordlen+boundaries.Dx(), pxperline),
-					imagebuffer,
-					image.Point{},
-					draw.Over,
-				)
-				wordlen += boundaries.Dx()
+				if l > 0 {
+					_, Ylvldiff := YLevelDifference(wordimg0, wordlen, imagebuffer)
+					fmt.Println(Ylvldiff)
+					if Ylvldiff*6 > pxperline {
+						Ylvldiff = 0
+					}
+					mergex := int(float64(boundaries.Dx()) * mergerxscale)
+
+					draw.Draw(
+						wordimg0,
+						image.Rect(wordlen-mergex, pxperline-boundaries.Dy()+Ylvldiff, wordlen+boundaries.Dx()-mergex, pxperline+Ylvldiff),
+						imagebuffer,
+						image.Point{},
+						draw.Over,
+					)
+					wordlen += boundaries.Dx() - mergex
+				} else {
+					draw.Draw(
+						wordimg0,
+						image.Rect(wordlen, pxperline-boundaries.Dy(), wordlen+boundaries.Dx(), pxperline),
+						imagebuffer,
+						image.Point{},
+						draw.Over,
+					)
+					wordlen += boundaries.Dx()
+				}
 			} else {
 				fmt.Println("Word [" + word + "] is too long, it will be split") //use slice tricks and make it overlap to the next line if the word doesnt fit
 				words = append(words, "ERRORWORD")
@@ -162,7 +237,7 @@ func main() {
 			}
 		}
 
-		wordimg := wordimg0.SubImage(image.Rect(0, 0, wordlen, pxperline))
+		wordimg := wordimg0.SubImage(image.Rect(0, 0, wordlen, pxperline)) //trimming the image
 
 		if wordlen > maxwidth-writerx {
 			if writery+pxperline < maxheight {
